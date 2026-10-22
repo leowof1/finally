@@ -7,6 +7,7 @@ from app.market.cache import PriceCache
 from app.market.massive import (
     SNAPSHOT_PATH,
     MassiveSource,
+    describe_error,
     ns_to_datetime,
     parse_snapshot,
 )
@@ -27,9 +28,10 @@ AAPL = {
 class FakeMassive:
     """httpx.MockTransport handler serving canned snapshots and recording requests."""
 
-    def __init__(self, items=None, status=200):
+    def __init__(self, items=None, status=200, body=None):
         self.items = {i["ticker"]: i for i in (items or [])}
         self.status = status
+        self.body = body  # raw bytes to serve with a 200 instead of a snapshot
         self.requests: list[list[str]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -40,6 +42,8 @@ class FakeMassive:
         self.requests.append(tickers)
         if self.status != 200:
             return httpx.Response(self.status, json={"status": "ERROR", "error": "nope"})
+        if self.body is not None:
+            return httpx.Response(200, content=self.body)
         found = [self.items[t] for t in tickers if t in self.items]
         return httpx.Response(200, json={"status": "OK", "count": len(found), "tickers": found})
 
@@ -186,3 +190,56 @@ async def test_stop_is_idempotent_for_task():
     assert src._task is not None
     await src.stop()
     assert src._task is None
+    await src.stop()
+
+
+async def test_start_twice_raises():
+    src, _ = make_source(FakeMassive([AAPL]))
+    await src.start(["AAPL"])
+    with pytest.raises(RuntimeError):
+        await src.start(["AAPL"])
+    await src.stop()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"<html>502 Bad Gateway</html>",
+        b"[1]",
+        b'{"tickers": {"AAPL": 1}}',
+        b'{"tickers": [{"day": {"c": 190.0}}, "junk"]}',
+    ],
+    ids=["html", "non-object", "tickers-not-list", "items-without-ticker"],
+)
+async def test_malformed_body_is_unavailable(caplog, body):
+    src, cache = make_source(FakeMassive(body=body))
+    await src.start(["AAPL"])  # must not raise
+    assert cache.get("AAPL") is None
+    with pytest.raises((MarketDataUnavailableError, UnknownTickerError)):
+        await src.add_ticker("MSFT")
+    await src.stop()
+
+
+@pytest.mark.parametrize("body", [b"<html></html>", b"[1]"])
+async def test_malformed_body_on_add_is_unavailable_not_500(body):
+    src, _ = make_source(FakeMassive(body=body))
+    with pytest.raises(MarketDataUnavailableError):
+        await src.add_ticker("AAPL")
+    await src.stop()
+
+
+async def test_older_quote_does_not_overwrite_newer():
+    newer = {**AAPL, "updated": AAPL["updated"] + 10**9, "lastTrade": {"p": 191.0}}
+    fake = FakeMassive([newer])
+    src, cache = make_source(fake)
+    await src.start(["AAPL"])
+    fake.items["AAPL"] = AAPL  # a stale response arrives later
+    await src.poll()
+    e = cache.get("AAPL")
+    assert e.price == 191.0 and e.timestamp == ns_to_datetime(newer["updated"])
+    await src.stop()
+
+
+def test_describe_error_for_transport_errors():
+    assert describe_error(httpx.ConnectTimeout("timed out")) == "ConnectTimeout: timed out"
+    assert describe_error(httpx.ConnectError("refused")) == "ConnectError: refused"

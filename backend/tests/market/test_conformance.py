@@ -38,7 +38,21 @@ async def test_tickers_is_read_only(factory):
     src, _ = factory()
     await src.start(["AAPL"])
     assert isinstance(src.tickers, frozenset)
+    assert not hasattr(src.tickers, "add")
+    copy = set(src.tickers)
+    copy.add("MSFT")
+    assert src.tickers == {"AAPL"}
     await src.stop()
+
+
+@pytest.mark.parametrize("factory", [simulator, massive], ids=["simulator", "massive"])
+async def test_start_twice_raises(factory):
+    src, _ = factory()
+    await src.start(["AAPL"])
+    with pytest.raises(RuntimeError):
+        await src.start(["AAPL"])
+    await src.stop()
+    await src.stop()  # safe to call twice
 
 
 @pytest.mark.parametrize("value", [None, "", "   "])
@@ -61,3 +75,15 @@ def test_factory_massive_default_interval(monkeypatch):
     monkeypatch.setenv("MASSIVE_API_KEY", "k")
     monkeypatch.setenv("MASSIVE_POLL_SECONDS", "")
     assert create_market_source(PriceCache()).poll_interval == 15.0
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("abc", 15.0), ("15s", 15.0), ("0", 1.0), ("-5", 1.0), ("0.2", 1.0), ("nan", 1.0), (" 2.5 ", 2.5)],
+)
+def test_factory_poll_interval_is_validated(monkeypatch, caplog, value, expected):
+    monkeypatch.setenv("MASSIVE_API_KEY", "k")
+    monkeypatch.setenv("MASSIVE_POLL_SECONDS", value)
+    assert create_market_source(PriceCache()).poll_interval == expected
+    if expected != 2.5:
+        assert "MASSIVE_POLL_SECONDS" in caplog.text

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.massive.com"
 SNAPSHOT_PATH = "/v2/snapshot/locale/us/markets/stocks/tickers"
 DEFAULT_POLL_SECONDS = 15.0
+MIN_POLL_SECONDS = 1.0
 REQUEST_TIMEOUT = 10.0
 
 
@@ -88,6 +89,8 @@ class MassiveSource(MarketDataSource):
         self._task: asyncio.Task | None = None
 
     async def start(self, tickers: Iterable[str]) -> None:
+        if self._task:
+            raise RuntimeError("MassiveSource already started")
         self._tickers = set(tickers)
         await self.poll()
         self._task = asyncio.create_task(self._run(), name="market-massive")
@@ -145,12 +148,20 @@ class MassiveSource(MarketDataSource):
             SNAPSHOT_PATH, params={"tickers": ",".join(tickers)}
         )
         response.raise_for_status()
-        return response.json().get("tickers") or []
+        # A 200 that isn't a snapshot (proxy or CDN error page) counts as "unavailable",
+        # raised as an httpx.HTTPError so callers handle it like a network failure.
+        try:
+            items = response.json().get("tickers") or []
+        except (ValueError, AttributeError) as exc:
+            raise httpx.DecodingError(f"Unexpected snapshot body: {exc}") from exc
+        if not isinstance(items, list):
+            raise httpx.DecodingError("Unexpected snapshot body: 'tickers' is not a list")
+        return [i for i in items if isinstance(i, dict) and i.get("ticker")]
 
     def _apply(self, quote: Quote) -> None:
-        """Write a quote to the cache unless nothing changed since the last poll."""
+        """Write a quote to the cache unless it is no newer than the cached one."""
         old = self.cache.get(quote.ticker)
-        if old and old.timestamp == quote.timestamp:
+        if old and quote.timestamp <= old.timestamp:
             return
         self.cache.update(
             quote.ticker, quote.price, quote.timestamp, reference_price=quote.reference_price
