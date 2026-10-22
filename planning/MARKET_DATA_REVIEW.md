@@ -235,3 +235,29 @@ These are not defects. They are worth knowing for the agents who build on this c
 4. F4, F5, F6: small guards, each with a test.
 5. F7, F8: logging config and `.env` loading in `main.py` when the backend/API agent wires up the rest of the app.
 6. T2, T4, T5: fill the remaining test gaps.
+
+---
+
+## 9. Resolution (2026-10-22, branch `fix/market-data-review`)
+
+All findings are fixed. `uv run pytest` now runs **81 passed** on Python 3.14.4 (and on 3.13), stable across repeated runs.
+
+| # | Fix | Tests |
+|---|---|---|
+| F1 | `stream.py` uses `sse_starlette.EventSourceResponse` with a `shutdown_event`, so the generator ends cleanly when uvicorn exits. Live check: SIGTERM with an SSE client connected now shuts down in ~0.2–0.4s, with no ASGI error and the client stream closing normally (it hung indefinitely before). Design §11.2 updated | `test_stream_route_headers_and_first_events` |
+| F2 | `backend/uv.lock` committed (`be39914`). No `.python-version`: pyenv also reads that file, and on this machine pyenv has no 3.14, so the `python3` shim hangs inside `backend/`. The Dockerfile pins 3.14; locally, create the venv with `uv sync --python /usr/bin/python3.14` | — |
+| F3 | `_fetch` raises `httpx.DecodingError` for non-snapshot 200 bodies and drops items without `ticker` | `test_malformed_body_is_unavailable` (4 cases), `test_malformed_body_on_add_is_unavailable_not_500` |
+| F4 | `poll_interval_from_env()`: bad values → 15s with a warning; `<1s`/`nan` → 1s floor with a warning | `test_factory_poll_interval_is_validated` (7 cases) |
+| F5 | `_apply` skips quotes with `timestamp <= cached timestamp` | `test_older_quote_does_not_overwrite_newer` |
+| F6 | `start()` raises `RuntimeError` if already started (both sources) | `test_start_twice_raises` (both sources + Massive) |
+| F7 | `logging.basicConfig(level=INFO)` in `main.py`; "Market data: simulator" now appears in the server log | live check |
+| F8 | `main.py` loads the project-root `.env` via `python-dotenv` (`override=False`) | live probe |
+| T1 | Route test uses `app.openapi()["paths"]` | `test_route_is_registered_on_contract_path` |
+| T2 | Real route tested: media type, `Cache-Control`, `X-Accel-Buffering`, first events | `test_stream_route_headers_and_first_events` |
+| T3 | See F3/F5 | — |
+| T4 | Lifespan wiring tested with `TestClient` (start, `app.state`, stop on exit) | `tests/test_main.py` |
+| T5 | `stop()` called twice; `tickers` immutability checked properly; `describe_error` for transport errors | `test_stop_is_idempotent_for_task`, `test_tickers_is_read_only`, `test_describe_error_for_transport_errors` |
+
+New runtime dependencies: `sse-starlette`, `python-dotenv`.
+
+Local dev note: on this machine uv's interpreter discovery can hang on a pyenv shim when it searches for a Python. If `uv sync` stalls with no output, pass the interpreter explicitly: `uv sync --python /usr/bin/python3.14`.

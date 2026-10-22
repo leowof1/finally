@@ -656,6 +656,8 @@ class SimulatorSource(MarketDataSource):
 - `tick()` is public and synchronous: tests call it directly instead of sleeping.
 - `_run` catches and logs any exception from a tick so the price feed never silently dies. (`CancelledError` is a `BaseException`, so cancellation still works.)
 - Tuning: to make the demo livelier, pass a larger `dt` (e.g. `GBMModel(dt=DT * 20)`) or raise `EVENT_PROBABILITY`. Don't round inside the model.
+- A removed ticker that is added again restarts from its seed (known tickers) or a new random price (unknown tickers), with a new `reference_price`. This fits the "since server start" meaning, but it is a visible jump if a user sells their last share of an unwatched ticker and adds it back.
+- `start()` raises `RuntimeError` if called twice; it would otherwise leak a second background task (both sources).
 
 ---
 
@@ -884,7 +886,9 @@ def describe_error(exc: httpx.HTTPError) -> str:
 
 - **Skip unchanged snapshots.** If `updated` hasn't moved since the last poll, the cache entry is left untouched. Otherwise every poll would copy `price` into `previous_price`, turn `direction` to `flat`, and bump `timestamp`, making the frontend append fake flat points. Outside market hours this means prices simply stand still, which is correct.
 - **SSE still sends every ticker every 500ms** (PLAN.md: "SSE resends unchanged entries"). The frontend flashes and appends a point only when `timestamp` changes.
+- **Never go backwards.** A quote whose `updated` is not newer than the cached one is dropped (`quote.timestamp <= old.timestamp`), so a slow poll response arriving after an `add_ticker` refetch cannot roll a price back.
 - **Failures never kill the loop.** `poll()` catches `httpx.HTTPError` (timeouts, connection errors, 4xx/5xx via `raise_for_status`) and logs one line; `_run` additionally catches anything unexpected. The next poll retries. There is no retry/backoff inside a poll — the next poll *is* the retry.
+- **Malformed 200 bodies count as "unavailable".** `_fetch` turns a body that isn't a snapshot (HTML from a proxy, non-object JSON, `tickers` not a list) into `httpx.DecodingError`, and drops items without a `ticker`. So `start()` still boots and `add_ticker()` raises `MarketDataUnavailableError` (503), never a 500.
 - Log lines name the likely cause:
 
   ```
@@ -933,6 +937,8 @@ def create_market_source(cache: PriceCache) -> MarketDataSource:
 | unset / `""` / whitespace | — | `SimulatorSource` |
 | `abc123` | unset | `MassiveSource`, 15s |
 | `abc123` | `5` | `MassiveSource`, 5s (paid plans: 2–15s) |
+| `abc123` | `abc`, `15s` | `MassiveSource`, 15s, with a warning |
+| `abc123` | `0`, `-5`, `0.2`, `nan` | `MassiveSource`, clamped to the 1s floor, with a warning |
 
 Add to `.env.example`:
 
@@ -941,7 +947,7 @@ Add to `.env.example`:
 MASSIVE_POLL_SECONDS=
 ```
 
-In local dev the backend loads `.env` from the project root before the factory runs (e.g. `python-dotenv` in `main.py`); in Docker it comes from `--env-file`.
+In local dev `main.py` loads `.env` from the project root with `python-dotenv` (`override=False`, so real environment variables win) before the factory runs; in Docker it comes from `--env-file`. `main.py` also calls `logging.basicConfig(level=INFO)`, so the "Market data: ..." line and Massive warnings appear in the server log.
 
 ---
 
@@ -1061,6 +1067,7 @@ Notes:
 - No per-client state, no diffing: each connection runs its own generator over the shared cache. 500ms × a few clients is negligible.
 - The SSE stream ticks independently of the source (500ms for both by default, but they are not synchronised). With Massive, ~30 identical events go out between polls; the frontend dedupes on `timestamp`.
 - When the client goes away, `is_disconnected()` turns true or Starlette cancels the generator; either way it ends.
+- **Server shutdown (post-review change).** The route returns `sse_starlette.EventSourceResponse`, not the `StreamingResponse` shown above. Uvicorn waits for open connections to close before it runs the lifespan shutdown, and a plain `StreamingResponse` only ends when the *client* leaves, so with a browser tab open `docker stop` hung for 10s and then SIGKILLed the process. sse-starlette watches for uvicorn's exit signal and sets a `shutdown_event`; the generator's stop check includes it, so the stream ends cleanly (within a 1s grace period) and shutdown takes well under a second. Keep-alive pings are disabled (`ping=0`) because a snapshot goes out every 500ms anyway.
 - `EventSource` reconnects automatically; `retry: 1000` makes it try after 1s.
 
 Frontend consumption (for reference; owned by the frontend agent):
@@ -1200,7 +1207,7 @@ Layout under `backend/tests/` with `asyncio_mode = "auto"` (§3), so `async def 
 
 ```bash
 uv run pytest tests/market tests/api -q
-# 46 passed in ~2s
+# 81 passed in ~2s (after the review fixes)
 ```
 
 ### 12.1 `tests/market/test_tickers.py`

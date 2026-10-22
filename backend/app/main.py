@@ -1,11 +1,22 @@
 """FastAPI app. Market data wiring only; database and other routers land separately."""
 
+import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from app.api.stream import router as stream_router
 from app.market import PriceCache, create_market_source
+
+# Local dev: read the project-root .env. Docker passes --env-file instead, and real
+# environment variables always win over the file.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
 
 DEFAULT_TICKERS = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "NVDA", "META", "JPM", "V", "NFLX"]
 

@@ -121,6 +121,8 @@ class SimulatorSource(MarketDataSource):
         self._task: asyncio.Task | None = None
 
     async def start(self, tickers: Iterable[str]) -> None:
+        if self._task:
+            raise RuntimeError("SimulatorSource already started")
         for ticker in tickers:
             await self.add_ticker(ticker)
         self._task = asyncio.create_task(self._run(), name="market-simulator")
