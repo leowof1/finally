@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0d1117;
+  --color-panel: #161b22;
+  --color-panel-2: #1c2230;
+  --color-border: #30363d;
+  --color-text: #e6edf3;
+  --color-muted: #8b949e;
+  --color-accent: #ecad0a;
+  --color-primary: #209dd7;
+  --color-secondary: #753991;
+  --color-up: #22c55e;
+  --color-down: #ef4444;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Price flash: class is applied, then removed so the background fades out. */
+.flash-cell {
+  transition: background-color 500ms ease-out;
+}
+.flash-up {
+  background-color: rgba(34, 197, 94, 0.35);
+  transition: none;
+}
+.flash-down {
+  background-color: rgba(239, 68, 68, 0.35);
+  transition: none;
+}
