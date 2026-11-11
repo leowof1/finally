@@ -37,6 +37,17 @@ docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
 # Open http://localhost:8000
 ```
 
+Or use the scripts: `scripts/start_mac.sh` (add `--build` to rebuild) and `scripts/stop_mac.sh`; on Windows, `scripts/start_windows.ps1` and `scripts/stop_windows.ps1`. Data persists in the `finally-data` volume.
+
+## Testing
+
+```bash
+cd backend && uv run --extra dev pytest          # Backend unit + API tests
+cd frontend && npm test                          # Frontend component tests
+docker compose -f test/docker-compose.test.yml up --build \
+  --abort-on-container-exit --exit-code-from e2e # E2E (Playwright, mock LLM)
+```
+
 ## Environment Variables
 
 | Variable | Required | Description |
